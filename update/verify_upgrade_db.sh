@@ -126,6 +126,7 @@ if [[ $STATUS == "DataModel is OK" ]]; then
     printf "${GREEN}Migration TEST is successfull${NC}. You may now migrate your real DB\n"
     EXITCODE=0
 else
+    STATUS=echo $STATUS | sed 's/%/\\045/'
     printf "${RED}Migration TEST has failed${NC}. Please contact qWat team and give them the following output :\n $STATUS \n\n"
     EXITCODE=1
 fi
