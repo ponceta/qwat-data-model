@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python3
 # coding=UTF-8
 
 """
@@ -7,14 +7,16 @@ Stress the DB by inserting, updating and deleting elements
 USAGE
     python test_scalability.py --pg_service qwat_test
 """
+from builtins import str
+from builtins import range
 import os
 import argparse
 import string
 import psycopg2
 import psycopg2.extras
 from subprocess import call
-
-TEST_SCRIPT = 'test_scenarii_scalability.model'
+dir_path = os.path.dirname(os.path.realpath(__file__))
+TEST_SCRIPT = os.path.join(dir_path, 'test_scenarii_scalability.model')
 OFFSET = 10  # offset in meter to create new objects
 OFFSET_ID = 10  # offset for new ids
 
@@ -79,7 +81,7 @@ def _execute_statements(cur, conn, fileName, nb_iteration):
         'id_node_b': 2,
 
         'valve_id': 1
-        }
+    }
 
     # Var list to replace in SQL
     vars_to_replace = [
@@ -130,7 +132,8 @@ def _execute_statements(cur, conn, fileName, nb_iteration):
     ]
 
     for i in range(int(nb_iteration)):
-        print "Iteration {nb}".format(nb=i)
+        # fix_print_with_import
+        print("Iteration {nb}".format(nb=i))
 
         # Modify values (coords, IDs)
         sav_x2 = p['cp_x2']

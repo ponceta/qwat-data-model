@@ -1,231 +1,189 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# ##########
+#
+# QWAT local test and upgrade  script
+# 23.11.2017
+# Sylvain Beorchia
+# Régis Haubourg
+# ##########
 
-# This script is manual
-# The process simulates a migration of your DB to the current version
-# If the simulation is OK, then the user is invited to migrate his real DB
+GNUGETOPT="getopt"
+if [[ "$OSTYPE" =~ FreeBSD* ]] || [[ "$OSTYPE" =~ darwin* ]]; then
+	GNUGETOPT="/usr/local/bin/getopt"
+elif [[ "$OSTYPE" =~ openbsd* ]]; then
+	GNUGETOPT="gnugetopt"
+fi
 
-
-# PARAMS
-SRCDB=qwat
-TESTDB=qwat_test
-TESTCONFORMDB=qwat_test_conform
-USER=test
-HOST=localhost
-QWATSERVICE=qwat
-QWATSERVICETEST=qwat_test
-QWATSERVICETESTCONFORM=qwat_test_conform
+# Default values
+PGSERVICEFILE=~/.pg_service.conf
 SRID=21781
+CLEAN=0
+TMPFILEDUMP=/tmp/qwat_dump
+UPGRADE=0
+SCRIPTDIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+EXTDIRS=()
+DELTADIRS=()
+INITFILES=()
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-TAB_FILES_POST=()
-
-DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-cd $DIR
-
+# Menu
 while [[ $# > 0 ]]; do
 key="$1"
 case $key in
     -h|--help)
         echo "Arguments:"
-        echo -e "\t-h|--help\tShow this help screen"
-        echo -e "\t-u|--upgrade\tUpgrade your real DB (perform all deltas on it)"
+        echo -e "\t-c|--clean\t\tCleans comp and test DB before starting"
+        echo -e "\t-e|--extdirs\tAdds local customization or extension directories"
+        echo -e "\t-h|--help\t\tShow this help screen"
+        echo -e "\t-t|--tmppath\t\tTemporary file for QWAT dump"
+        echo -e "\t-u|--upgrade\t\tUpgrade your real DB (perform all deltas on it)"
+        echo -e "\t-p|--pgservicefile\t\tUse this pgservicefile"
+        echo
+        echo -e "Usage example: "
+        echo -e "\t./upgrade_db.sh -c -e /path/to/local/extension_or_customization -t /tmp/qwat_tmp.dmp -u"
+        echo -e "\t./upgrade_db.sh -c -t /tmp/qwat_tmp.dmp -u"
+        echo
         exit 0
-        ;;
-    -u|--upgrade)
-    UPGRADE_REAL_DB="$2"
-    shift # past argument
     ;;
+    -c|--clean)
+        CLEAN=1
+    ;;
+    # TODO: Add arguments
+    -e|--extdirs)
+        EXTDIRS+=("$2")
+        shift # past argument
+    ;;
+    -t|--tmppath)
+        TMPFILEDUMP="$2"
+        shift # past argument
+    ;;
+    -u|--upgrade)
+        UPGRADE=1
+        shift # past argument
+    ;;
+    -p|--pgservicefile)
+	PGSERVICEFILE="$2"
+	shift # past argument
 esac
-
 shift
 done
 
-
-if [[ $UPGRADE_REAL_DB =~ ^[Yy] ]]; then
-  printf "\n\n${RED}ATTENTION: this process will migrate your real DB. Please make sure you have made some backups${NC}\n\n\n"
+# Check if pum is installed
+PUM_VERSION=$(pum -v)
+if [[ $PUM_VERSION == '' ]]; then
+    printf "\t${RED}PUM is not installed${NC}\n"
+    echo "Please install PUM compatible with Python 3 (pip install pum)"
+    echo
+    exit 0
 fi
 
-read -s  -p "Please enter the password for your DB user ($USER) (if the user does not exist, please edit this script and change it)": pwd
-export PGPASSWORD="$pwd"
-echo ""
-
-echo "Getting current num version"
-NUMVERSION=\"$(/usr/bin/psql --host $HOST --port 5432 --username "$USER" --no-password -d "$SRCDB" -c "COPY(SELECT version FROM qwat_sys.versions WHERE module='model.core') TO STDOUT")\"
-printf "You are currently using qWat v${GREEN}$NUMVERSION${NC}\n"
-
-
-if [[ $UPGRADE_REAL_DB =~ ^[Yy] ]]; then
-    read -p "Are you sure you want to upgrade your database ($SRCDB) ? " -n 1 -r
-    echo    # (optional) move to a new line
-    if [[ $REPLY =~ ^[Yy]$ ]]
-    then
-            echo "Upgrading qWat DB"
-            echo
-
-            echo "Applying deltas on $SRCDB :"
-            for f in $DIR/delta/*.sql
-            do
-                CURRENT_DELTA=$(basename "$f")
-                CURRENT_DELTA_WITHOUT_EXT="${CURRENT_DELTA%.*}"
-                CURRENT_DELTA_NUM_VERSION=$(echo $CURRENT_DELTA_WITHOUT_EXT| cut -c 7)
-                CURRENT_DELTA_NUM_VERSION_FULL=$(echo $CURRENT_DELTA_WITHOUT_EXT| cut -d'_' -f 2)
-                if [[ $CURRENT_DELTA_NUM_VERSION > $SHORT_LATEST_TAG || $CURRENT_DELTA_NUM_VERSION == $SHORT_LATEST_TAG || $SHORT_LATEST_TAG == '' ]]; then
-                    printf "    Processing ${GREEN}$CURRENT_DELTA${NC}, num version = $CURRENT_DELTA_NUM_VERSION ($CURRENT_DELTA_NUM_VERSION_FULL)\n"
-                    /usr/bin/psql -v ON_ERROR_STOP=1 --host $HOST --port 5432 --username "$USER" --no-password -q -d "$SRCDB" -f $f
-
-                    # Check if there is a POST file associated to the delta, if so, store it in the array for later execution
-                    EXISTS_POST_FILE=$f'.post'
-                    if [ -e "$EXISTS_POST_FILE" ]
-                    then
-                        TAB_FILES_POST+=($EXISTS_POST_FILE)
-                    fi
-
-                    printf "        Verifying num version conformity - "
-                    # For each delta run on the DB, we have to check that the version number contained in the file name is the same that has been hardcoded in the DB
-                    # note: delta files MUST include at their end: UPDATE qwat_sys.versions SET version = 'x.x.x';
-                    OUTPUT_NUM=`/usr/bin/psql -v ON_ERROR_STOP=1 --host $HOST --port 5432 --username "$USER" --no-password -q -d "$SRCDB" -t -c "SELECT version FROM qwat_sys.versions;"`
-                    OUTPUT_NUM="$(echo -e "${OUTPUT_NUM}" | tr -d '[:space:]')"
-                    if [ "$OUTPUT_NUM" != "$CURRENT_DELTA_NUM_VERSION_FULL" ]; then
-                        printf " Num in DB: ${GREEN}$OUTPUT_NUM${NC} - Num in file: ${RED}$CURRENT_DELTA_NUM_VERSION_FULL${NC} => ${RED}Numbers do NOT match !${NC}\n"
-                        EXITCODE=1
-                        exit $EXITCODE
-                    else
-                        printf " Num in DB: ${GREEN}$OUTPUT_NUM${NC} - Num in file: ${RED}$CURRENT_DELTA_NUM_VERSION_FULL${NC} => ${GREEN}OK${NC}\n"
-                    fi
-                else
-                    printf "    Bypassing  ${RED}$CURRENT_DELTA${NC}, num version = $CURRENT_DELTA_NUM_VERSION_FULL\n"
-                fi
-            done
-
-            echo "Reloading views and functions from last commit"
-            export PGSERVICE=$QWATSERVICE
-            SRID=$SRID ./ordinary_data/views/rewrite_views.sh
-            SRID=$SRID ./ordinary_data/functions/rewrite_functions.sh
-
-            # In the end, check if there are some POST files to execute (postfiles must be named exactly like the delta files that have been executed previously)
-            printf "\n"
-            for i in "${TAB_FILES_POST[@]}"
-            do
-            printf "\n    Processing POST file: ${GREEN}$i${NC}\n"
-            /usr/bin/psql --host $HOST --port 5432 --username "$USER" --no-password -d "$SRCDB" -f $i
-            done
-
-            echo "Done"
-    fi
-    echo "Exiting"
-    EXITCODE=0
-    exit $EXITCODE
+# Get current version in ../system/CURRENT_VERSION.txt
+# (git tag forbidden)
+VERSION_FILE="${SCRIPTDIR}/../system/CURRENT_VERSION.txt"
+if [ ! -f $VERSION_FILE ]; then
+    echo
+    printf "${RED}$VERSION_FILE file not found! Aborting${NC}\n"
+    echo
+    exit 0
 fi
+VERSION=$(cat $VERSION_FILE)
 
-
-echo "Dumping actual DB"
-TODAY=`date '+%Y%m%d'`
-/usr/bin/pg_dump --host $HOST --port 5432 --username "$USER" --format custom --file "$TODAY""_current_qwat.backup" "$SRCDB"
-
-echo "Dropping existing DB qwat_test"
-/usr/bin/dropdb "$TESTDB" --host $HOST --port 5432 --username "$USER" --no-password
-
-echo "Creating DB qwat_test"
-/usr/bin/createdb "$TESTDB" --host $HOST --port 5432 --username "$USER" --no-password
-
-echo "Restoring current DB in qwat_test"
-/usr/bin/pg_restore --host $HOST --port 5432 --username "$USER" --dbname "$TESTDB" --no-password --single-transaction --exit-on-error "$TODAY""_current_qwat.backup"
-
-TAB_FILES_POST=()
-echo "Applying deltas on $TESTDB :"
-for f in $DIR/delta/*.sql
+for i in "${EXTDIRS[@]}"
 do
-    CURRENT_DELTA=$(basename "$f")
-    CURRENT_DELTA_WITHOUT_EXT="${CURRENT_DELTA%.*}"
-    CURRENT_DELTA_NUM_VERSION=$(echo $CURRENT_DELTA_WITHOUT_EXT| cut -c 7)
-    CURRENT_DELTA_NUM_VERSION_FULL=$(echo $CURRENT_DELTA_WITHOUT_EXT| cut -d'_' -f 2)
-    if [[ $CURRENT_DELTA_NUM_VERSION > $SHORT_LATEST_TAG || $CURRENT_DELTA_NUM_VERSION == $SHORT_LATEST_TAG || $SHORT_LATEST_TAG == '' ]]; then
-        printf "    Processing ${GREEN}$CURRENT_DELTA${NC}, num version = $CURRENT_DELTA_NUM_VERSION ($CURRENT_DELTA_NUM_VERSION_FULL)\n"
-        /usr/bin/psql --host $HOST --port 5432 --username "$USER" --no-password -q -d "$TESTDB" -f $f
-
-        # Check if there is a POST file associated to the delta, if so, store it in the array for later execution
-        EXISTS_POST_FILE=$f'.post'
-        if [ -e "$EXISTS_POST_FILE" ]
-        then
-            TAB_FILES_POST+=($EXISTS_POST_FILE)
-        fi
-
-        printf "        Verifying num version conformity - "
-        # For each delta run on the DB, we have to check that the version number contained in the file name is the same that has been hardcoded in the DB
-        # note: delta files MUST include at their end: UPDATE qwat_sys.versions SET version = 'x.x.x';
-        OUTPUT_NUM=`/usr/bin/psql -v ON_ERROR_STOP=1 --host $HOST --port 5432 --username "$USER" --no-password -q -d "$TESTDB" -t -c "SELECT version FROM qwat_sys.versions;"`
-        OUTPUT_NUM="$(echo -e "${OUTPUT_NUM}" | tr -d '[:space:]')"
-        if [ "$OUTPUT_NUM" != "$CURRENT_DELTA_NUM_VERSION_FULL" ]; then
-            printf " Num in DB: ${GREEN}$OUTPUT_NUM${NC} - Num in file: ${RED}$CURRENT_DELTA_NUM_VERSION_FULL${NC} => ${RED}Numbers do NOT match !${NC}\n"
-            EXITCODE=1
-            exit $EXITCODE
-        else
-            printf " Num in DB: ${GREEN}$OUTPUT_NUM${NC} - Num in file: ${RED}$CURRENT_DELTA_NUM_VERSION_FULL${NC} => ${GREEN}OK${NC}\n"
-        fi
-    else
-        printf "    Bypassing  ${RED}$CURRENT_DELTA${NC}, num version = $CURRENT_DELTA_NUM_VERSION_FULL\n"
-    fi
+	DELTADIRS+=("$i/delta")
+	INITFILES+=("$i/init.sh")
+	echo ${INITFILES[*]}
 done
 
-cd ..
-echo
-echo "Reloading views and functions"
-export PGSERVICE=$QWATSERVICETEST
-SRID=$SRID ./ordinary_data/views/rewrite_views.sh
-SRID=$SRID ./ordinary_data/functions/rewrite_functions.sh
-cd $DIR
-
-# In the end, check if there are some POST files to execute (postfiles must be named exactly like the delta files that have been executed previously)
-unset PGSERVICE
-echo
-for i in "${TAB_FILES_POST[@]}"
-do
-   printf "\nProcessing POST file: ${GREEN}$i${NC}\n"
-   /usr/bin/psql --host $HOST --port 5432 --username "$USER" --no-password -d "$TESTDB" -f $i
-done
-
-
-# Clean temporary DB
-echo
-echo "Dropping DB (qwat_test_conform)"
-/usr/bin/dropdb "$TESTCONFORMDB" --host $HOST --port 5432 --username "$USER" --no-password
-
-echo
-echo "Creating DB (qwat_test_conform)"
-/usr/bin/createdb "$TESTCONFORMDB" --host $HOST --port 5432 --username "$USER" --no-password
-
-echo
-echo "Initializing qwat DB in qwat_test_conform"
-cd ..
-./init_qwat.sh -p $QWATSERVICETESTCONFORM -d > update/init_qwat.log
-cd update
-
-echo
-echo "Producing referential file for current qWat version (from $QWATSERVICETESTCONFORM)"
-/usr/bin/psql --host $HOST --port 5432 --username "$USER" --no-password -d "$QWATSERVICETESTCONFORM" -f test_migration.sql > test_migration.expected.sql
-
-echo
-echo "Performing conformity test"
-STATUS=$(python test_migration.py --pg_service $QWATSERVICETEST)
-
-if [[ $STATUS == "DataModel is OK" ]]; then
-    printf "${GREEN}Migration TEST is successfull${NC}. You may now migrate your real DB by launching the command './upgrade_db.sh -u yes' \n"
-else
-    printf "${RED}Migration TEST has failed${NC}. Please contact qWat team and give them the following output :\n $STATUS \n\n"
+if [[ -z "$PGSERVICEFILE" ]] || [[ ! -f "$PGSERVICEFILE" ]]; then
+    echo "No valid PG service file given."
+    exit 0
 fi
 
-
+# set -- "${POSITIONAL[@]}" # restore positional parameters
+echo "Parameters:"
+printf "\t${GREEN}PGSERVICEFILE = ${PGSERVICEFILE}${NC}\n"
+printf "\t${GREEN}CLEAN         = ${CLEAN}${NC}\n"
+printf "\t${GREEN}INITFILES     = ${INITFILES[*]}${NC}\n"
+printf "\t${GREEN}DELTADIRS     = ${DELTADIRS[*]}${NC}\n"
+printf "\t${GREEN}TMPFILEDUMP   = ${TMPFILEDUMP}${NC}\n"
+printf "\t${GREEN}UPGRADE       = ${UPGRADE}${NC}\n"
 echo
-echo "Cleaning"
-rm "$TODAY""_current_qwat.backup"
-rm init_qwat.log
+printf "\t${GREEN}PUM_VERSION   = $PUM_VERSION${NC}\n"
+echo
+printf "\t${GREEN}Current QWAT model version = ${VERSION}${NC}\n"
+echo
 
-# TODO : dropping qwat_test
-# TODO : dropping qwat_test_conform
+# clean existing db
+if [[ $CLEAN -eq 1 ]]; then
+    printf "\n${BLUE}Cleaning  Option set:${NC}\n\n"
 
-EXITCODE=0
-exit $EXITCODE
+    sleep 1
+
+    # Read DB info from pg_service.conf file
+    DBCOMP_NAME=$(sed -n -e "/^\[qwat_comp]/,/^\[/ p" $PGSERVICEFILE | grep "^dbname" | cut -d"=" -f2)
+    DBCOMP_USER=$(sed -n -e "/^\[qwat_comp]/,/^\[/ p" $PGSERVICEFILE | grep "^user" | cut -d"=" -f2)
+    DBCOMP_HOST=$(sed -n -e "/^\[qwat_test]/,/^\[/ p" $PGSERVICEFILE | grep "^host" | cut -d"=" -f2)
+    DBCOMP_PORT=$(sed -n -e "/^\[qwat_test]/,/^\[/ p" $PGSERVICEFILE | grep "^port" | cut -d"=" -f2)
+    DBTEST_NAME=$(sed -n -e "/^\[qwat_test]/,/^\[/ p" $PGSERVICEFILE | grep "^dbname" | cut -d"=" -f2)
+    DBTEST_USER=$(sed -n -e "/^\[qwat_test]/,/^\[/ p" $PGSERVICEFILE | grep "^user" | cut -d"=" -f2)
+    DBTEST_HOST=$(sed -n -e "/^\[qwat_test]/,/^\[/ p" $PGSERVICEFILE | grep "^host" | cut -d"=" -f2)
+    DBTEST_PORT=$(sed -n -e "/^\[qwat_test]/,/^\[/ p" $PGSERVICEFILE | grep "^port" | cut -d"=" -f2)
+
+    if [ ! -z "$DBCOMP_HOST" ]; then
+	    COMPHOST="-h $DBCOMP_HOST"
+    fi
+    if [ ! -z "$DBCOMP_PORT" ]; then
+	    COMPPORT="-p $DBCOMP_PORT"
+    fi
+    if [ ! -z "$DBTEST_HOST" ]; then
+	    TESTHOST="-h $DBTEST_HOST"
+    fi
+    if [ ! -z "$DBTEST_PORT" ]; then
+	    TESTPORT="-p $DBTEST_PORT"
+    fi
+
+    # Drop test & comp DB
+    dropdb $DBCOMP_NAME -U $DBCOMP_USER ${COMPHOST} ${COMPPORT}
+    printf "\t${GREEN}DB $DBCOMP_NAME dropped${NC}\n"
+    dropdb $DBTEST_NAME -U $DBTEST_USER ${TESTHOST} ${TESTPORT}
+    printf "\t${GREEN}DB $DBTEST_NAME dropped${NC}\n"
+
+    # Create test & comp DB
+    createdb $DBCOMP_NAME -U $DBCOMP_USER ${COMPHOST} ${COMPPORT}
+    printf "\t${GREEN}DB $DBCOMP_NAME created${NC}\n"
+    createdb $DBTEST_NAME -U $DBTEST_USER ${TESTHOST} ${TESTPORT}
+    printf "\t${GREEN}DB $DBTEST_NAME created${NC}\n"
+fi
+
+# initialize qwat db comparison db
+# do not use -r to avoid re-creating the roles, as the roles should already
+# be there for the main qwat_prod database
+printf "\n${BLUE}Initializing qwat comparison db${NC}\n\n"
+
+sleep 1
+${SCRIPTDIR}/../init_qwat.sh -p qwat_comp -s $SRID
+
+# Initialize qwat db with extensions/customizations
+for i in "${INITFILES[@]}"
+do
+	echo $i
+	$i -p qwat_comp -s $SRID
+done
+
+# add pum metadata to DB using current version
+printf "\n${BLUE}PUM baseline on qwat_comp${NC}\n\n"
+sleep 1
+
+pum baseline -p qwat_comp -t qwat_sys.info -d ${DELTADIRS[*]} -b $VERSION
+
+# checks delta files from 1.0 lead to the same version as current version, if yes upgrades
+printf "\n${BLUE}Test and upgrade qwat core${NC}\n\n"
+sleep 1
+
+#pum test-and-upgrade -pp qwat_prod -pt qwat_test -pc qwat_comp -t qwat_sys.info -d delta/ -f $TMPFILEDUMP -i columns constraints views sequences indexes triggers functions rules
+pum test-and-upgrade -x -pp qwat_prod -pt qwat_test -pc qwat_comp -t qwat_sys.info -d ${DELTADIRS[*]} -f $TMPFILEDUMP -i views rules

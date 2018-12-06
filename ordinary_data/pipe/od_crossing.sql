@@ -1,6 +1,6 @@
 CREATE TABLE qwat_od.crossing
 (
-  id serial NOT NULL,
+  id serial PRIMARY KEY,
   disabled boolean NOT NULL DEFAULT false,
   controled boolean NOT NULL DEFAULT false,
   hide_pipe smallint NOT NULL DEFAULT 1,
@@ -8,7 +8,6 @@ CREATE TABLE qwat_od.crossing
   _pipe2_id integer,
   _pipe1_angle double precision,
   _pipe2_angle double precision,
-  CONSTRAINT crossing_pkey PRIMARY KEY (id),
   CONSTRAINT crossing_pipe1 FOREIGN KEY (_pipe1_id)
       REFERENCES qwat_od.pipe (id) MATCH FULL
       ON UPDATE NO ACTION ON DELETE NO ACTION,
@@ -21,6 +20,7 @@ WITH (
 );
 
 ALTER TABLE qwat_od.crossing ADD COLUMN geometry geometry('POINT',:SRID) NOT NULL;
+CREATE INDEX crossing_geoidx ON qwat_od.crossing USING GIST ( geometry );
 
 CREATE OR REPLACE FUNCTION qwat_od.ft_controled_crossing()
 RETURNS trigger AS

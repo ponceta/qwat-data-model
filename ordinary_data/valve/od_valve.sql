@@ -76,7 +76,6 @@ ALTER TABLE qwat_od.valve ADD COLUMN geometry_alt2 geometry('POINTZ',:SRID);
 ALTER TABLE qwat_od.valve ADD COLUMN update_geometry_alt1 boolean default null; -- used to determine if alternative geometries should be updated when main geometry is updated
 ALTER TABLE qwat_od.valve ADD COLUMN update_geometry_alt2 boolean default null; -- used to determine if alternative geometries should be updated when main geometry is updated
 
-
 /* Schema view */
 DO $$ BEGIN PERFORM qwat_sys.fn_enable_schemavisible('valve', 'valve_function', 'fk_valve_function'); END $$;
 
@@ -87,6 +86,7 @@ DO $$ BEGIN PERFORM qwat_sys.fn_label_create_fields('valve'); END $$;
 CREATE INDEX valve_geoidx ON qwat_od.valve USING GIST ( geometry );
 CREATE INDEX valve_geoidx_alt1 ON qwat_od.valve USING GIST ( geometry_alt1 );
 CREATE INDEX valve_geoidx_alt2 ON qwat_od.valve USING GIST ( geometry_alt2 );
+CREATE INDEX valve_geoidx_handle ON qwat_od.valve USING GIST ( handle_geometry );
 
 /* NODE TRIGGER */
 /*
@@ -153,6 +153,46 @@ CREATE TRIGGER tr_valve_altgeom_alt
 	FOR EACH ROW
 	EXECUTE PROCEDURE qwat_od.ft_geometry_alternative_aux();
 COMMENT ON TRIGGER tr_valve_altgeom_alt ON qwat_od.valve IS 'Trigger: when updating, check if alternative geometries are different to fill the boolean fields.';
+
+/* --------------------------------------------*/
+/* ------- MAIN ALTITUDE TRIGGER ------------*/
+CREATE OR REPLACE FUNCTION qwat_od.ft_valve_main_altitude() RETURNS TRIGGER AS
+$BODY$
+	DECLARE
+	BEGIN
+	-- altitude is prioritary on Z value of the geometry (if both changed, only altitude is taken into account)
+	IF TG_OP = 'INSERT' THEN
+		IF NEW.altitude IS NOT NULL THEN
+			NEW.geometry := ST_SetSRID(ST_MakePoint( ST_X(NEW.geometry), ST_Y(NEW.geometry), NEW.altitude ), ST_SRID(NEW.geometry));
+		ELSIF ST_Z(NEW.geometry) IS NOT NULL THEN
+			NEW.altitude := ST_Z(NEW.geometry);
+		END IF;
+	ELSIF TG_OP = 'UPDATE' THEN
+		IF NEW.altitude <> OLD.altitude THEN
+			NEW.geometry := ST_SetSRID(ST_MakePoint( ST_X(NEW.geometry), ST_Y(NEW.geometry), NEW.altitude ), ST_SRID(NEW.geometry));
+		ELSIF ST_Z(NEW.geometry) <> ST_Z(OLD.geometry) THEN
+			NEW.altitude := ST_Z(NEW.geometry);
+		END IF;
+	END IF;
+	RETURN NEW;
+	END;
+$BODY$
+LANGUAGE plpgsql;
+
+COMMENT ON FUNCTION qwat_od.ft_valve_main_altitude() IS 'Trigger: when updating, check if altitude or Z value of geometry changed and synchronize them.';
+
+CREATE TRIGGER valve_main_altitude_update_trigger
+	BEFORE UPDATE OF altitude, geometry ON qwat_od.valve
+	FOR EACH ROW
+	WHEN (NEW.altitude <> OLD.altitude OR ST_Z(NEW.geometry) <> ST_Z(OLD.geometry))
+	EXECUTE PROCEDURE qwat_od.ft_valve_main_altitude();
+COMMENT ON TRIGGER valve_main_altitude_update_trigger ON qwat_od.valve IS 'Trigger: when updating, check if altitude or Z value of geometry changed and synchronize them.';
+
+CREATE TRIGGER valve_main_altitude_insert_trigger
+	BEFORE INSERT ON qwat_od.valve
+	FOR EACH ROW
+	EXECUTE PROCEDURE qwat_od.ft_valve_main_altitude();
+COMMENT ON TRIGGER valve_main_altitude_insert_trigger ON qwat_od.valve IS 'Trigger: when updating, check if altitude or Z value of geometry changed and synchronize them.';
 
 
 /* --------------------------------------------*/

@@ -1,13 +1,13 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 import yaml
 import sys
 from sql_export_view import SqlExportView
 
 if len(sys.argv) > 1:
-  pg_service = sys.argv[1]
+    pg_service = sys.argv[1]
 else:
-  pg_service = "qwat_test"
+    pg_service = "qwat_test"
 
 definition = yaml.load("""
 
@@ -45,7 +45,7 @@ joins:
   folder:
     table: qwat_od.folder
     fkey: fk_folder
-    
+
   valve_type:
     table: qwat_vl.valve_type
     fkey: fk_valve_type
@@ -55,8 +55,10 @@ joins:
   valve_actuation:
     table: qwat_vl.valve_actuation
     fkey: fk_valve_actuation
-   
+
 
 """)
+# fix_print_with_import
 
-print SqlExportView(pg_service, definition).sql()
+# fix_print_with_import
+print(SqlExportView(pg_service, definition).sql())

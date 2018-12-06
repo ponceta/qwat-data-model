@@ -1,15 +1,17 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
+from __future__ import print_function
 import imp
 import os
 import sys
 
-pgiv = imp.load_source('PGInheritanceViewRecursive', os.path.join(os.path.dirname(__file__), '../../../metaproject/postgresql/pg_inheritance_view/pg_inheritance_view_recursive.py'))
+pgiv = imp.load_source('PGInheritanceViewRecursive', os.path.join(os.path.dirname(
+    __file__), '../../../metaproject/postgresql/pg_inheritance_view/pg_inheritance_view_recursive.py'))
 
 if len(sys.argv) > 1:
-	pg_service = sys.argv[1]
+    pg_service = sys.argv[1]
 else:
-	pg_service = 'qwat_test'
+    pg_service = 'qwat_test'
 
 
 qwat_node_element = """
@@ -191,5 +193,7 @@ view: qwat_od.vw_element_part
 
 
 """
+# fix_print_with_import
 
-print pgiv.PGInheritanceViewRecursive(pg_service, qwat_node_element).sql_all()
+# fix_print_with_import
+print(pgiv.PGInheritanceViewRecursive(pg_service, qwat_node_element).sql_all())
